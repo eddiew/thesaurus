@@ -1,0 +1,308 @@
+
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<title>Thesaurus</title>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<style>
+			body {
+				color: #cccccc;
+				font-family:Monospace;
+				font-size:13px;
+				text-align:center;
+
+				background-color: #050505;
+				margin: 0px;
+				overflow: hidden;
+			}
+
+			#info {
+				position: absolute;
+				top: 0px; width: 100%;
+				padding: 5px;
+			}
+
+			a {
+
+				color: #0080ff;
+			}
+		</style>
+	</head>
+	<body>
+
+		<div id="container"></div>
+		<div id="info"><a href="http://threejs.org" target="_blank">three.js</a> webgl - buffergeometry - particles</div>
+
+		<script src="three.min.js"></script>
+		<script src="js/data.js"></script>
+		<script src="js/TypedArrayUtils.js"></script>
+		<script src="js/FirstPersonControls.js"></script>
+		<script type="x-shader/x-vertex" id="vertexshader">
+
+		    attribute float alpha;
+
+		    attribute vec3 color;
+
+		    varying float vAlpha;
+
+		    varying vec3 vColor;
+
+		    void main() {
+
+		        vAlpha = alpha;
+
+		        vColor = color;
+
+		        vec4 mvPosition = modelViewMatrix * vec4( position, 1.0 );
+
+		        gl_PointSize = 32.0 / length(mvPosition.xyz);
+
+		        gl_Position = projectionMatrix * mvPosition;
+
+		    }
+
+		</script>
+
+		<script type="x-shader/x-fragment" id="fragmentshader">
+
+		    varying float vAlpha;
+
+		    varying vec3 vColor;
+
+		    void main() {
+
+		        gl_FragColor = vec4( vColor, vAlpha );
+
+		    }
+
+		</script>
+		<script>
+
+			var container, stats;
+
+			var camera, controls, scene, renderer, kdTree, geometry;
+			var clock = new THREE.Clock();
+
+			var mesh;
+
+			// Contruct hash table of words by position for lookup later
+			// necessary because kd-tree construction scrambles word order
+			function xyzHash(coords) {
+				return 400*coords[0] + 20*coords[1] + coords[2]
+			}
+			var pointsToWords = {}
+
+			var particles = window.data.length;
+
+			var positions = new Float32Array( particles * 3 );
+			var colors = new Float32Array(particles * 3);
+			var alphas = new Float32Array(particles);
+
+			var nearby_old = new Set();
+
+			init();
+			animate();
+
+			function init() {
+
+				container = document.getElementById( 'container' );
+
+				//
+
+				camera = new THREE.PerspectiveCamera( 60, window.innerWidth / window.innerHeight, 0.1, 100 );
+
+				// First Person Controls
+				controls = new THREE.FirstPersonControls( camera );
+				controls.movementSpeed = 5;
+				controls.lookSpeed = 0.1;
+
+				scene = new THREE.Scene();
+				scene.fog = new THREE.Fog( 0x050505, 2000, 3500 );
+
+				//
+
+				geometry = new THREE.BufferGeometry();
+
+				// var group = new THREE.Group();
+
+				// Set positions & alphas buffer
+				for ( var i = 0; i < particles; i ++ ) {
+					positions[ i*3 ]     = window.data[i][0]
+					positions[ i*3 + 1 ] = window.data[i][1]
+					positions[ i*3 + 2 ] = window.data[i][2]
+					var posHash = xyzHash(positions.subarray(i*3, i*3+3))
+					pointsToWords[posHash] = window.words[i]
+					alphas[i] = 1
+				}
+
+				// Construct kd-tree
+				kdTree = new THREE.TypedArrayUtils.Kdtree(positions, function(a, b) {
+					return (a[0]-b[0])*(a[0]-b[0]) + (a[1]-b[1])*(a[1]-b[1]) + (a[2]-b[2])*(a[2]-b[2]);
+				}, 3);
+
+				// Set colors buffer
+				for (var i = 0; i < particles; i++) {
+					var x = positions[i*3]
+					var y = positions[i*3 + 1]
+					var z = positions[i*3 + 2]
+					var color = new THREE.Color()
+					var dist = x*x+y*y+z*z / 10000
+					var rot = Math.atan2(y, x)/Math.PI + 1
+					color.setHSL(rot, dist, 0.5)
+					colors[i*3] = color.r
+					colors[i*3+1] = color.g
+					colors[i*3+2] = color.b
+				}
+
+				// scene.add(group)
+
+				geometry.addAttribute( 'position', new THREE.BufferAttribute( positions, 3 ) );
+				geometry.addAttribute( 'color', new THREE.BufferAttribute( colors, 3 ) );
+				geometry.addAttribute( 'alpha', new THREE.BufferAttribute( alphas, 1 ) );
+
+				geometry.computeBoundingSphere();
+
+				//
+
+				// var material = new THREE.PointCloudMaterial( { size: 0.5, vertexColors: THREE.VertexColors } );
+				var shaderMaterial = new THREE.ShaderMaterial( {
+			        attributes:     {
+			        	alpha: { type: 'f', value: [] },
+			        	color: {type: 'c', value: []}
+			    	},
+			        vertexShader:   document.getElementById( 'vertexshader' ).textContent,
+			        fragmentShader: document.getElementById( 'fragmentshader' ).textContent,
+			        transparent:    true
+
+			    });
+
+				particleSystem = new THREE.PointCloud( geometry, shaderMaterial );
+
+				
+
+				scene.add( particleSystem );
+
+				//
+
+				renderer = new THREE.WebGLRenderer( { antialias: false } );
+				renderer.setClearColor( scene.fog.color );
+				renderer.setPixelRatio( window.devicePixelRatio );
+				renderer.setSize( window.innerWidth, window.innerHeight );
+
+				container.appendChild( renderer.domElement );
+
+				//
+
+				window.addEventListener( 'resize', onWindowResize, false );
+
+			}
+
+			function onWindowResize() {
+
+				camera.aspect = window.innerWidth / window.innerHeight;
+				camera.updateProjectionMatrix();
+
+				renderer.setSize( window.innerWidth, window.innerHeight );
+				controls.handleResize();
+
+				render();
+
+			}
+
+			//
+
+			function animate() {
+
+				requestAnimationFrame( animate );
+				displayNearest(camera, kdTree)
+				controls.update( clock.getDelta() )
+
+				render();
+
+			}
+
+			function render() {
+
+				var time = Date.now() * 0.001;
+
+				renderer.render( scene, camera );
+
+			}
+
+			function displayNearest(camera, kdTree) {
+				var nearby = kdTree.nearest([camera.position.x, camera.position.y, camera.position.z], 100, 10)
+				var _frustum = new THREE.Frustum();
+				var _projScreenMatrix = new THREE.Matrix4();
+				camera.matrixWorldInverse.getInverse( camera.matrixWorld );
+
+				_projScreenMatrix.multiplyMatrices( camera.projectionMatrix, camera.matrixWorldInverse );
+				_frustum.setFromMatrix( _projScreenMatrix );
+
+				// nearby_old.forEach(function(pointIdx) {
+				// 	alphas[pointIdx] = 1
+				// })
+
+				var newIdxs = []
+
+				nearby.forEach(function(object) {
+					var idx = object[0].pos
+					if (nearby_old.has(idx)) return
+					var objectPoint = new THREE.Vector3().fromArray(object[0].obj);
+					if (_frustum.containsPoint(objectPoint)) {
+						// alphas[idx] = 0;
+						alphas[idx] = 0
+						newIdxs.push(idx)
+						var posHash = xyzHash(object[0].obj)
+						var word = pointsToWords[posHash]
+						var wordTexture = textSprite(word, {
+							size: 64, 
+							color: "#" + (new THREE.Color(colors[idx*3], colors[idx*3+1], colors[idx*3+2])).getHexString()
+						})
+						var wordMaterial = new THREE.SpriteMaterial( { map: wordTexture, color: 0xffffff, fog: true } );
+						var sprite = new THREE.Sprite( wordMaterial );
+						sprite.position.set(object[0].obj[0], object[0].obj[1], object[0].obj[2]);
+						scene.add(sprite);
+					}
+					geometry.attributes.alpha.needsUpdate = true
+				})
+				// nearby_old.clear();
+				newIdxs.forEach(function(idx){nearby_old.add(idx)})
+			}
+
+			function textSprite(text, params) {
+				if (params === undefined) params = {}
+			    var font = params.font || "Arial",
+			        size = params.size || 130,
+			        color = params.color || "#676767";
+			    padding = 10;
+
+			    font = "bold " + size + "px " + font;
+
+			    var canvas = document.createElement('canvas');
+			    var context = canvas.getContext('2d');
+			    context.font = font;
+
+			    // get size data (height depends only on font size)
+			    var metrics = context.measureText(text),
+			        textWidth = metrics.width;
+
+			    canvas.width = textWidth + 3;
+			    canvas.height = size + 6;
+
+			    context.font = font;
+			    context.fillStyle = color;
+			    context.fillText(text, 0, size+3);
+			    //context.style.border="3px solid blue";
+
+			    // canvas contents will be used for a texture
+			    var texture = new THREE.Texture(canvas);
+			    texture.needsUpdate = true;
+
+			    return texture;
+			}
+
+		</script>
+
+	</body>
+</html>
